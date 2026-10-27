@@ -1,0 +1,29 @@
+name: Automatic Fork Sync
+
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch: 
+
+permissions:
+  contents: write
+
+jobs:
+  sync_with_upstream:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: master
+
+      - name: Sync upstream changes
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          
+          git remote add upstream https://github.com/k1tbyte/Wand-Enhancer.git
+          git fetch upstream
+          
+          git merge upstream/master
+          git push origin master
