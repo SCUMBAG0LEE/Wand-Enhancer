@@ -16,6 +16,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: master
+          fetch-depth: 0
 
       - name: Sync upstream changes
         run: |
@@ -25,5 +26,5 @@ jobs:
           git remote add upstream https://github.com/k1tbyte/Wand-Enhancer.git
           git fetch upstream
           
-          git merge upstream/master
+          git merge upstream/master --allow-unrelated-histories
           git push origin master
