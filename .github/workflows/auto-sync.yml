@@ -17,6 +17,7 @@ jobs:
         with:
           ref: master
           fetch-depth: 0
+          token: ${{ secrets.WORKFLOW_SYNC_TOKEN }}
 
       - name: Sync upstream changes
         run: |
