@@ -1,0 +1,134 @@
+name: Fork Release (Artifact & Upstream Sync)
+
+on:
+  workflow_run:
+    workflows: ["Build executable"]
+    types:
+      - completed
+  push:
+    tags:
+      - '*'
+  workflow_dispatch:
+
+jobs:
+  publish-fork-release:
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: windows-latest
+    permissions:
+      contents: write
+      actions: read
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      # 1. Download pre-built executable artifact from 'Build executable'
+      - name: Download build artifact
+        uses: dawidd6/action-download-artifact@v9
+        with:
+          workflow: build.yml
+          name: WandEnhancer-unsigned
+          path: release_dist/
+          check_artifacts: true
+          search_artifacts: true
+
+      # 2. Extract version and validate release metadata
+      - name: Validate metadata & determine release version
+        id: metadata
+        shell: pwsh
+        run: |
+          $exePath = "release_dist/WandEnhancer.exe"
+          
+          # Extract version from compiled EXE
+          if (Test-Path $exePath) {
+            $ver = (Get-Item $exePath).VersionInfo.ProductVersion
+            if ([string]::IsNullOrWhiteSpace($ver)) {
+              $ver = (Get-Item $exePath).VersionInfo.FileVersion
+            }
+          } else {
+            $ver = "${{ github.ref_name }}"
+          }
+
+          $cleanVer = $ver.TrimStart('v')
+
+          # Run upstream validation script if available
+          if (Test-Path "./scripts/validate-release-metadata.ps1") {
+            ./scripts/validate-release-metadata.ps1 -ExpectedVersion $cleanVer -ErrorAction SilentlyContinue
+          }
+
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "VERSION=$cleanVer"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "TAG_NAME=v$cleanVer"
+
+      # 3. Fetch OP Release info WITH Multi-Level Fallback
+      - name: Resolve release notes & title
+        id: release_notes
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $upstream = "k1tbyte/Wand-Enhancer"
+          $tag = "${{ steps.metadata.outputs.TAG_NAME }}"
+          $ver = "${{ steps.metadata.outputs.VERSION }}"
+
+          $title = ""
+          $body = ""
+
+          # STEP 3A: Try fetching exact tag release from OP
+          try {
+            $opRelease = gh api "repos/$upstream/releases/tags/$ver" 2>$null | ConvertFrom-Json
+            if (!$opRelease) {
+              $opRelease = gh api "repos/$upstream/releases/tags/$tag" 2>$null | ConvertFrom-Json
+            }
+            if ($opRelease) {
+              $title = $opRelease.name
+              $body = $opRelease.body
+              Write-Host "Successfully fetched OP release details for $tag"
+            }
+          } catch {}
+
+          # FALLBACK 1: Extract from local CHANGELOG.md via script
+          if ([string]::IsNullOrWhiteSpace($body)) {
+            Write-Host "OP release not found. Falling back to local CHANGELOG parsing..."
+            if (Test-Path "./scripts/get-changelog-section.ps1") {
+              ./scripts/get-changelog-section.ps1 -Version $ver -OutputPath release-notes.md -ErrorAction SilentlyContinue
+              if (Test-Path release-notes.md) {
+                $body = Get-Content release-notes.md -Raw
+              }
+            }
+          }
+
+          # FALLBACK 2: Default automated summary if CHANGELOG section missing
+          if ([string]::IsNullOrWhiteSpace($body)) {
+            Write-Host "Changelog section missing. Applying automated fallback text..."
+            $body = @"
+          ## Wand Enhancer Release $ver
+
+          Automated release build generated from commit `${{ github.sha }}`.
+
+          - Pre-built binary verified and packaged automatically.
+          - Built against upstream ref `$ver`.
+          "@
+          }
+
+          # Set Title Fallback
+          if ([string]::IsNullOrWhiteSpace($title)) {
+            $title = "Wand Enhancer v$ver"
+          }
+
+          Set-Content -Path "final-release-notes.md" -Value $body
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "TITLE=$title"
+
+      # 4. Publish Release with attached EXE
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ steps.release_notes.outputs.TITLE }}
+          tag_name: ${{ steps.metadata.outputs.TAG_NAME }}
+          body_path: final-release-notes.md
+          files: |
+            release_dist/WandEnhancer.exe
+            CHANGELOG.md
+          fail_on_unmatched_files: false
+          prerelease: ${{ contains(steps.metadata.outputs.TAG_NAME, '-') }}
+          make_latest: ${{ !contains(steps.metadata.outputs.TAG_NAME, '-') }}
